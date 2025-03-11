@@ -8,7 +8,7 @@ import altair as alt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # YouTube API Key
-API_KEY = "AIzaSyCID6TRLIk4krNLu5BpUkDXpTfhbQaZScs"  # Replace with your actual API key
+API_KEY = "AIzaSyCID6TRLIk4krNLu5BpUkDXpTfhbQaZScs"
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEO_URL = "https://www.googleapis.com/youtube/v3/videos"
 YOUTUBE_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels"
@@ -23,7 +23,7 @@ def parse_duration(duration_str):
     pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
     match = re.match(pattern, duration_str)
     if not match:
-        return 0  # If for some reason it doesn't match, default to 0
+        return 0  # If it doesn't match, default to 0
 
     hours = int(match.group(1)) if match.group(1) else 0
     minutes = int(match.group(2)) if match.group(2) else 0
@@ -34,10 +34,10 @@ def parse_duration(duration_str):
 def fetch_data_for_keyword(keyword, start_date):
     """
     Fetches and processes data for a single keyword.
-    Returns a list of 'viral' video entries that meet the criteria:
+    Returns a list of 'viral' video entries that meet criteria:
       - Video >= 10 minutes
       - Channel subscribers < 2000
-      - Views >= 5 × subscribers (virality factor >= 5)
+      - Video views >= 5× channel's average views
     """
     results = []
     try:
@@ -113,12 +113,14 @@ def fetch_data_for_keyword(keyword, start_date):
             # Parse duration and skip videos < 10 minutes
             duration_str = content_details.get("duration", "PT0S")
             video_length_seconds = parse_duration(duration_str)
-            if video_length_seconds < 600:  # 10 minutes = 600 seconds
+            if video_length_seconds < 600:  # 10 minutes
                 continue
 
             # Channel stats
             chan_stats = channel_stats_dict.get(channel_id, {})
             subs = int(chan_stats.get("subscriberCount", 0))
+            channel_views = int(chan_stats.get("viewCount", 0))
+            channel_video_count = int(chan_stats.get("videoCount", 0))
 
             # Basic video info
             title = video["snippet"].get("title", "N/A")
@@ -126,12 +128,19 @@ def fetch_data_for_keyword(keyword, start_date):
             video_url = f"https://www.youtube.com/watch?v={video_id}"
             views = int(vid_stats.get("viewCount", 0))
 
-            # Virality factor (5× threshold)
-            virality_factor = 0
-            if subs > 0:
-                virality_factor = views / subs
+            # Calculate channel's average views (avoid division by zero)
+            if channel_video_count > 0:
+                average_views = channel_views / channel_video_count
+            else:
+                average_views = 0
 
-            # If channel < 2000 subs & video is 5× more views than subs
+            # Virality factor = video views / average channel views
+            if average_views > 0:
+                virality_factor = views / average_views
+            else:
+                virality_factor = 0
+
+            # Filter: channel < 2000 subs & video views >= 5× average channel views
             if subs < 2000 and virality_factor >= 5:
                 results.append({
                     "Keyword": keyword,
@@ -140,6 +149,8 @@ def fetch_data_for_keyword(keyword, start_date):
                     "URL": video_url,
                     "Views": views,
                     "Subscribers": subs,
+                    "ChannelViews": channel_views,
+                    "ChannelVideoCount": channel_video_count,
                     "ViralityFactor": round(virality_factor, 2),
                     "DurationSec": video_length_seconds
                 })
@@ -233,7 +244,7 @@ if st.button("Fetch Data"):
             # Sort descending by ViralityFactor
             all_results.sort(key=lambda x: x["ViralityFactor"], reverse=True)
 
-            st.success(f"Found {len(all_results)} 'viral' results (>=10 min) across all keywords!")
+            st.success(f"Found {len(all_results)} 'viral' results (≥10 min) across all keywords!")
             for result in all_results:
                 duration_in_minutes = round(result["DurationSec"] / 60, 1)
                 st.markdown(
@@ -243,7 +254,9 @@ if st.button("Fetch Data"):
                     f"**URL:** [Watch Video]({result['URL']})  \n"
                     f"**Views:** {result['Views']}  \n"
                     f"**Subscribers:** {result['Subscribers']}  \n"
-                    f"**Virality Factor (Views/Subs):** {result['ViralityFactor']}  \n"
+                    f"**Channel Views:** {result['ChannelViews']}  \n"
+                    f"**Channel Video Count:** {result['ChannelVideoCount']}  \n"
+                    f"**Virality Factor (VideoViews/AvgChannelViews):** {result['ViralityFactor']}  \n"
                     f"**Video Length:** {duration_in_minutes} minutes"
                 )
                 st.write("---")
@@ -273,7 +286,7 @@ if st.button("Fetch Data"):
             word_freq = Counter(words).most_common(20)
 
             if word_freq:
-                st.write("### Top 20 Words in Viral Video Titles (≥10 min, Virality ≥5)")
+                st.write("### Top 20 Words in Viral Video Titles (≥10 min, 5× average channel views)")
                 word_df = pd.DataFrame(word_freq, columns=["Word", "Frequency"])
                 st.dataframe(word_df)
 
