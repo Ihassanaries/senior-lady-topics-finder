@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from datetime import datetime, timedelta
+import re
 
 # YouTube API Key
 API_KEY = "AIzaSyCID6TRLIk4krNLu5BpUkDXpTfhbQaZScs"
@@ -8,13 +9,31 @@ YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEO_URL = "https://www.googleapis.com/youtube/v3/videos"
 YOUTUBE_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels"
 
+# Utility function to parse ISO 8601 video duration
+# e.g. "PT1H2M30S", "PT15M", "PT30S", etc.
+def parse_duration(duration_str):
+    """
+    Parses an ISO 8601 duration string (e.g. 'PT1H2M30S')
+    and returns the total duration in seconds.
+    """
+    pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
+    match = re.match(pattern, duration_str)
+    if not match:
+        return 0  # If for some reason it doesn't match, default to 0
+
+    hours = int(match.group(1)) if match.group(1) else 0
+    minutes = int(match.group(2)) if match.group(2) else 0
+    seconds = int(match.group(3)) if match.group(3) else 0
+    total_seconds = hours * 3600 + minutes * 60 + seconds
+    return total_seconds
+
 # Streamlit App Title
 st.title("YouTube Viral Topics Tool")
 
 # Input Fields
 days = st.number_input("Enter Days to Search (1-30):", min_value=1, max_value=30, value=5)
 
-# List of broader keywords (e.g., from your screenshot)
+# List of broader keywords
 keywords = [
     "retirement planning",
     "how life has changed",
@@ -37,7 +56,8 @@ keywords = [
     "senior safety tips",
     "healthy lifestyle",
     "relationships in later life",
-    "mental health in seniors","elderly",
+    "mental health in seniors",
+    "elderly",
     "senior",
     "relationships",
     "motivation",
@@ -114,17 +134,25 @@ if st.button("Fetch Data"):
                 st.warning(f"Skipping keyword: {keyword} due to missing video/channel data.")
                 continue
 
-            # Fetch video statistics
-            stats_params = {"part": "statistics", "id": ",".join(video_ids), "key": API_KEY}
+            # Fetch video statistics AND content details (for duration)
+            stats_params = {
+                "part": "statistics,contentDetails",  # Include contentDetails
+                "id": ",".join(video_ids),
+                "key": API_KEY
+            }
             stats_response = requests.get(YOUTUBE_VIDEO_URL, params=stats_params)
             stats_data = stats_response.json()
 
             if "items" not in stats_data or not stats_data["items"]:
-                st.warning(f"Failed to fetch video statistics for keyword: {keyword}")
+                st.warning(f"Failed to fetch video statistics/content details for keyword: {keyword}")
                 continue
 
             # Fetch channel statistics
-            channel_params = {"part": "statistics", "id": ",".join(channel_ids), "key": API_KEY}
+            channel_params = {
+                "part": "statistics",
+                "id": ",".join(channel_ids),
+                "key": API_KEY
+            }
             channel_response = requests.get(YOUTUBE_CHANNEL_URL, params=channel_params)
             channel_data = channel_response.json()
 
@@ -133,7 +161,7 @@ if st.button("Fetch Data"):
                 continue
 
             # Prepare dicts keyed by ID for safe lookups
-            video_stats_dict = {item["id"]: item["statistics"] for item in stats_data["items"]}
+            video_stats_dict = {item["id"]: item for item in stats_data["items"]}
             channel_stats_dict = {item["id"]: item["statistics"] for item in channel_data["items"]}
 
             # Collect results
@@ -144,7 +172,20 @@ if st.button("Fetch Data"):
                 if not video_id or not channel_id:
                     continue
 
-                vid_stats = video_stats_dict.get(video_id, {})
+                # Grab the entire video info (stats + contentDetails)
+                vid_info = video_stats_dict.get(video_id, {})
+                vid_stats = vid_info.get("statistics", {})
+                content_details = vid_info.get("contentDetails", {})
+
+                # Parse duration
+                duration_str = content_details.get("duration", "PT0S")
+                video_length_seconds = parse_duration(duration_str)
+
+                # Skip if video is under 10 minutes (600 seconds)
+                if video_length_seconds < 600:
+                    continue
+
+                # Channel stats
                 chan_stats = channel_stats_dict.get(channel_id, {})
 
                 # Extract relevant data
@@ -155,15 +196,11 @@ if st.button("Fetch Data"):
                 subs = int(chan_stats.get("subscriberCount", 0))
 
                 # Calculate a simple "virality factor"
-                # Example: if views are >= 10 * subscribers => "viral"
-                # Or store the ratio as virality_factor = views / subs (if subs > 0)
                 virality_factor = 0
                 if subs > 0:
                     virality_factor = views / subs
 
-                # You can decide whether to filter only "viral" or display everything
-                # For example, filter channels with fewer than 2000 subscribers
-                # AND show if the virality_factor >= 10
+                # Filter for channels under 2k subs & virality >= 10
                 if subs < 2000 and virality_factor >= 10:
                     all_results.append({
                         "Title": title,
@@ -171,27 +208,30 @@ if st.button("Fetch Data"):
                         "URL": video_url,
                         "Views": views,
                         "Subscribers": subs,
-                        "ViralityFactor": round(virality_factor, 2)
+                        "ViralityFactor": round(virality_factor, 2),
+                        "DurationSec": video_length_seconds
                     })
 
         # Display results
         if all_results:
-            # Sort descending by virality factor or views if desired
+            # Sort descending by virality factor
             all_results.sort(key=lambda x: x["ViralityFactor"], reverse=True)
 
-            st.success(f"Found {len(all_results)} 'viral' results across all keywords!")
+            st.success(f"Found {len(all_results)} 'viral' results (>=10 min) across all keywords!")
             for result in all_results:
+                duration_in_minutes = round(result["DurationSec"] / 60, 1)
                 st.markdown(
                     f"**Title:** {result['Title']}  \n"
                     f"**Description:** {result['Description']}  \n"
                     f"**URL:** [Watch Video]({result['URL']})  \n"
                     f"**Views:** {result['Views']}  \n"
                     f"**Subscribers:** {result['Subscribers']}  \n"
-                    f"**Virality Factor (Views/Subs):** {result['ViralityFactor']}"
+                    f"**Virality Factor (Views/Subs):** {result['ViralityFactor']}  \n"
+                    f"**Video Length:** {duration_in_minutes} minutes"
                 )
                 st.write("---")
         else:
-            st.warning("No 'viral' results found with the current filters.")
+            st.warning("No 'viral' results found (>=10 min) with the current filters.")
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
